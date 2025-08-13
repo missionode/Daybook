@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Day Planner • Minimal</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root{ --slate-grid: rgba(15,23,42,.05) }
+    body { font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans"; }
+    .dragging { opacity: .9; box-shadow: 0 12px 28px rgba(0,0,0,.16); }
+    .resize-handle { height: 10px; cursor: ns-resize; }
+    .no-select { -webkit-user-select: none; user-select: none; }
+    dialog{ border:none; padding:0; margin:auto; }
+    dialog[open]{ animation: modalIn .18s ease-out both; }
+    dialog::backdrop{ background: rgba(2,6,23,.45); backdrop-filter: blur(2px); }
+    @keyframes modalIn{ from{ opacity:0; transform: translateY(8px) scale(.98);} to{opacity:1; transform:none;} }
+    .holiday-banner { position:absolute; inset:0; align-items:center; justify-content:center; pointer-events:none; }
+  </style>
+</head>
+<body class="bg-gradient-to-b from-slate-50 to-white text-slate-900 antialiased">
+  <div class="max-w-screen-lg mx-auto min-h-screen flex flex-col">
+    <!-- Header -->
+    <header class="sticky top-0 z-20 bg-white/90 supports-[backdrop-filter]:bg-white/60 backdrop-blur shadow-sm">
+      <div class="px-4 py-3">
+        <div class="flex flex-wrap items-center gap-3 gap-y-2">
+          <!-- Row 1 on small: nav + date; Inline on md+ -->
+          <div class="flex items-center gap-2 order-1 basis-full md:basis-auto">
+            <button id="prevDay" class="rounded-xl px-3 py-2 bg-slate-100 hover:bg-slate-200 ring-1 ring-slate-200/60">◀</button>
+            <input id="datePicker" type="date" class="rounded-xl ring-1 ring-slate-200/60 px-3 py-2 bg-transparent focus:outline-none focus:ring-2 focus:ring-sky-300" />
+            <button id="nextDay" class="rounded-xl px-3 py-2 bg-slate-100 hover:bg-slate-200 ring-1 ring-slate-200/60">▶</button>
+            <div id="dayLabel" class="ml-2 font-semibold"></div>
+          </div>
+          <!-- Row 2 on small: search + actions; Inline right on md+ -->
+          <div class="flex items-center gap-2 order-2 basis-full md:basis-auto md:ml-auto w-full">
+            <div class="flex items-center gap-2 w-full md:w-auto">
+              <input id="taskSearch" type="search" placeholder="Search task…" class="flex-1 md:w-64 w-full rounded-xl ring-1 ring-slate-200/60 px-3 py-2 bg-white/80 focus:outline-none focus:ring-2 focus:ring-sky-300" />
+              <button id="searchNextBtn" class="hidden rounded-xl px-3 py-2 bg-slate-100 hover:bg-slate-200 ring-1 ring-slate-200/60" title="Next match">Next ▶</button>
+            </div>
+            <button id="holidayToggle" title="Toggle holiday" class="rounded-xl px-3 py-2 bg-amber-50 hover:bg-amber-100 ring-1 ring-amber-200 text-amber-800"><span aria-hidden="true">🏖</span><span class="hidden md:inline ml-1">Holiday</span></button>
+            <button id="shareBtn" title="Share day" class="rounded-xl px-3 py-2 bg-sky-50 hover:bg-sky-100 ring-1 ring-sky-200 text-sky-800"><span aria-hidden="true">↗</span><span class="hidden md:inline ml-1">Share</span></button>
+            <button id="prefsBtn" class="rounded-xl px-3 py-2 bg-slate-100 hover:bg-slate-200 ring-1 ring-slate-200/60" title="Preferences"><span aria-hidden="true">⚙️</span><span class="hidden md:inline ml-1">Preferences</span></button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Day Note -->
+    <div class="px-4 pt-3">
+      <textarea id="dayNote" placeholder="Day note…" class="w-full min-h-[56px] rounded-xl ring-1 ring-slate-200/60 bg-white/90 p-3 focus:outline-none focus:ring-2 focus:ring-sky-300"></textarea>
+    </div>
+
+    <!-- Main: Timeline -->
+    <main class="flex-1 px-4 pb-24">
+      <div class="grid grid-cols-12 gap-4 mt-4">
+        <!-- Time rail (scroll-linked) -->
+        <aside class="col-span-2 md:col-span-1 text-right pr-2 select-none">
+          <div id="timeRail" class="relative w-full overflow-auto" style="height: calc(100vh - 220px)">
+            <ul id="timeMarks" class="text-xs text-slate-500 leading-[1]"></ul>
+          </div>
+        </aside>
+        <!-- Timeline canvas -->
+        <section class="relative col-span-10 md:col-span-11 rounded-2xl ring-1 ring-slate-200/60 overflow-hidden bg-gradient-to-b from-white to-slate-50">
+          <div id="timeline" class="relative w-full overflow-auto" style="height: calc(100vh - 220px)"></div>
+          <div id="nowLine" class="hidden absolute left-0 right-0 h-[2px] bg-sky-500/70 pointer-events-none"></div>
+          <div id="holidayBanner" class="holiday-banner hidden">
+            <div class="rounded-full px-4 py-1 text-sm bg-amber-100/70 ring-1 ring-amber-300 text-amber-900">Holiday / Off day</div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- Floating Add -->
+    <button id="addTaskFab" aria-label="Add task" class="fixed bottom-5 right-5 md:bottom-6 md:right-6 z-30 h-14 w-14 rounded-full shadow-lg bg-sky-600 text-white text-2xl leading-[56px] hover:bg-sky-700">＋</button>
+  </div>
+
+  <!-- Task Dialog -->
+  <dialog id="taskDialog" class="rounded-2xl p-0 w-full max-w-xl shadow-2xl">
+    <form method="dialog" id="taskForm" class="p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-lg font-semibold">Task</h3>
+        <button type="button" id="taskClose" class="rounded-lg px-3 py-1.5 bg-slate-100 hover:bg-slate-200 ring-1 ring-slate-200/60">Close</button>
+      </div>
+      <div class="flex items-start gap-3">
+        <div class="flex-1">
+          <label class="block text-sm text-slate-600 mb-1">Description</label>
+          <textarea id="taskDesc" class="w-full rounded-xl ring-1 ring-slate-200/60 bg-white p-3 focus:outline-none focus:ring-2 focus:ring-sky-300" rows="3" placeholder="What’s the plan?"></textarea>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-3 mt-3">
+        <div>
+          <label class="block text-sm text-slate-600 mb-1">Title</label>
+          <input id="taskTitle" class="w-full rounded-xl ring-1 ring-slate-200/60 bg-white p-2 focus:outline-none focus:ring-2 focus:ring-sky-300" placeholder="Auto from description" />
+        </div>
+        <div>
+          <label class="block text-sm text-slate-600 mb-1">Date</label>
+          <input id="taskDate" type="date" class="w-full rounded-xl ring-1 ring-slate-200/60 bg-white p-2 focus:outline-none focus:ring-2 focus:ring-sky-300" />
+        </div>
+        <div>
+          <label class="block text-sm text-slate-600 mb-1">Start</label>
+          <input id="taskStart" type="time" class="w-full rounded-xl ring-1 ring-slate-200/60 bg-white p-2 focus:outline-none focus:ring-2 focus:ring-sky-300" />
+        </div>
+        <div>
+          <label class="block text-sm text-slate-600 mb-1">End</label>
+          <input id="taskEnd" type="time" class="w-full rounded-xl ring-1 ring-slate-200/60 bg-white p-2 focus:outline-none focus:ring-2 focus:ring-sky-300" />
+        </div>
+      </div>
+      <div class="flex items-center justify-between mt-3">
+        <label class="inline-flex items-center gap-2 text-sm">
+          <input id="taskCompleted" type="checkbox" class="size-4 rounded border-slate-300" />
+          <span>Completed</span>
+        </label>
+        <button type="button" id="deleteTask" class="text-rose-600 hover:underline hidden">Delete</button>
+      </div>
+      <div class="flex items-center justify-end gap-2 mt-3">
+        <button type="button" id="cancelTask" class="px-3 py-2 rounded-xl bg-slate-100 ring-1 ring-slate-200/60">Cancel</button>
+        <button type="submit" id="saveTask" class="px-3 py-2 rounded-xl bg-sky-600 text-white hover:bg-sky-700">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Preferences Dialog -->
+  <dialog id="prefsDialog" class="rounded-2xl p-0 w-full max-w-md shadow-2xl">
+    <form method="dialog" id="prefsForm" class="p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-lg font-semibold">Preferences</h3>
+        <button type="button" id="prefsClose" class="rounded-lg px-3 py-1.5 bg-slate-100 hover:bg-slate-200 ring-1 ring-slate-200/60">Close</button>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-sm text-slate-600 mb-1">Workday start</label>
+          <input id="prefStart" type="time" class="w-full rounded-xl ring-1 ring-slate-200/60 bg-white p-2 focus:outline-none focus:ring-2 focus:ring-sky-300" value="09:00" />
+        </div>
+        <div>
+          <label class="block text-sm text-slate-600 mb-1">Workday end</label>
+          <input id="prefEnd" type="time" class="w-full rounded-xl ring-1 ring-slate-200/60 bg-white p-2 focus:outline-none focus:ring-2 focus:ring-sky-300" value="18:00" />
+        </div>
+        <div>
+          <label class="block text-sm text-slate-600 mb-1">Slot minutes</label>
+          <input id="prefSlot" type="number" min="5" step="5" class="w-full rounded-xl ring-1 ring-slate-200/60 bg-white p-2 focus:outline-none focus:ring-2 focus:ring-sky-300" value="30" />
+        </div>
+        <div>
+          <label class="block text-sm text-slate-600 mb-1">Clock</label>
+          <select id="prefClock" class="w-full rounded-xl ring-1 ring-slate-200/60 bg-white p-2 focus:outline-none focus:ring-2 focus:ring-sky-300">
+            <option value="12" selected>12-hour (AM/PM)</option>
+            <option value="24">24-hour</option>
+          </select>
+        </div>
+
+        <!-- Backup section -->
+        <div class="col-span-2 mt-2">
+          <div class="rounded-xl ring-1 ring-slate-200/60 p-3 bg-white/80">
+            <div class="flex items-center justify-between">
+              <h4 class="font-medium">Backup</h4>
+              <span id="backupSupportBadge" class="text-xs text-slate-500"></span>
+            </div>
+            <div class="mt-2 grid grid-cols-2 gap-2">
+              <button type="button" id="exportJsonBtn" class="px-3 py-2 rounded-xl bg-slate-100 ring-1 ring-slate-200/60">Export .json</button>
+              <button type="button" id="importJsonBtn" class="px-3 py-2 rounded-xl bg-slate-100 ring-1 ring-slate-200/60">Import .json</button>
+              <button type="button" id="chooseBackupFileBtn" class="px-3 py-2 rounded-xl bg-sky-50 ring-1 ring-sky-200 text-sky-800">Choose backup file…</button>
+              <button type="button" id="backupSaveNowBtn" class="px-3 py-2 rounded-xl bg-sky-600 text-white hover:bg-sky-700" disabled>Save now</button>
+              <label class="col-span-2 inline-flex items-center gap-2 text-sm mt-1">
+                <input id="autoSaveToggle" type="checkbox" class="size-4 rounded border-slate-300" disabled />
+                <span>Auto-save to the chosen file (remembers across reloads)</span>
+              </label>
+              <button type="button" id="forgetBackupBtn" class="px-3 py-2 rounded-xl bg-rose-50 ring-1 ring-rose-200 text-rose-700">Forget backup file</button>
+              <p class="col-span-2 text-xs text-slate-500">
+                Tip: put the file in a synced folder (Drive/Dropbox/iCloud). If you clear site data or move the file, just pick it again.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="flex justify-end gap-2 mt-4">
+        <button type="button" id="cancelPrefs" class="px-3 py-2 rounded-xl bg-slate-100 ring-1 ring-slate-200/60">Close</button>
+        <button type="submit" class="px-3 py-2 rounded-xl bg-sky-600 text-white hover:bg-sky-700">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Share Dialog (fallback for unsupported navigator.share) -->
+  <dialog id="shareDialog" class="rounded-2xl p-0 w-full max-w-xl shadow-2xl">
+    <div class="p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-lg font-semibold">Share day</h3>
+        <button type="button" id="shareCloseBtn" class="rounded-lg px-3 py-1.5 bg-slate-100 hover:bg-slate-200 ring-1 ring-slate-200/60">Close</button>
+      </div>
+      <p class="text-sm text-slate-600 mb-2">Copy or download your day's plan.</p>
+      <textarea id="shareText" class="w-full min-h-[160px] rounded-xl ring-1 ring-slate-200/60 bg-white p-3 text-sm"></textarea>
+      <div class="flex justify-end gap-2 mt-3">
+        <button type="button" id="shareCopyBtn" class="px-3 py-2 rounded-xl bg-slate-100 ring-1 ring-slate-200/60">Copy</button>
+        <button type="button" id="shareDownloadBtn" class="px-3 py-2 rounded-xl bg-sky-600 text-white hover:bg-sky-700">Download .txt</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script>
+    // ---------- Helpers ----------
+    const $ = sel => document.querySelector(sel);
+    const pad = n => String(n).padStart(2,'0');
+    const fmtDateKey = (d) => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+    const toDateFromKey = (key) => { const [y,m,dd] = key.split('-').map(Number); return new Date(y, m-1, dd); };
+    const minutesBetween = (a,b) => (b.getHours()*60+b.getMinutes()) - (a.getHours()*60+a.getMinutes());
+    const clamp = (x, min, max) => Math.max(min, Math.min(max, x));
+    const fmtDisplay = (hhmm) => {
+      if (!hhmm) return '';
+      const [H, M] = hhmm.split(':').map(Number);
+      if (store.prefs.clock === '24') return `${pad(H)}:${pad(M)}`;
+      const ampm = H >= 12 ? 'PM' : 'AM';
+      let h = H % 12; if (h === 0) h = 12;
+      return `${h}:${pad(M)} ${ampm}`;
+    };
+    const shiftKey = (key, delta) => { const d = toDateFromKey(key); d.setDate(d.getDate()+delta); return fmtDateKey(d); };
+    const parseHM = (hm) => { const [h,m] = hm.split(':').map(Number); const d = new Date(); d.setHours(h,m,0,0); return d; };
+    const supportsFS = !!(window.showSaveFilePicker && window.FileSystemWritableFileStream);
+
+    // --- IndexedDB tiny KV to remember FileSystemHandles ---
+    const IDB_NAME='dayplanner', IDB_STORE='kv';
+    function idbPut(key, val){ return new Promise((res, rej)=>{
+      const open = indexedDB.open(IDB_NAME,1);
+      open.onupgradeneeded=()=> open.result.createObjectStore(IDB_STORE);
+      open.onsuccess=()=>{ const db=open.result, tx=db.transaction(IDB_STORE,'readwrite');
+        tx.objectStore(IDB_STORE).put(val, key);
+        tx.oncomplete=()=>{db.close(); res();}; tx.onerror=()=>rej(tx.error); };
+      open.onerror=()=>rej(open.error);
+    });}
+    function idbGet(key){ return new Promise((res, rej)=>{
+      const open = indexedDB.open(IDB_NAME,1);
+      open.onupgradeneeded=()=> open.result.createObjectStore(IDB_STORE);
+      open.onsuccess=()=>{ const db=open.result, tx=db.transaction(IDB_STORE,'readonly');
+        const rq = tx.objectStore(IDB_STORE).get(key);
+        rq.onsuccess=()=>{db.close(); res(rq.result);}; rq.onerror=()=>rej(rq.error); };
+      open.onerror=()=>rej(open.error);
+    });}
+
+    // ---------- State ----------
+    const store = {
+      tasksByDate: JSON.parse(localStorage.getItem('tasksByDate')||'{}'),
+      dayNotes: JSON.parse(localStorage.getItem('dayNotes')||'{}'),
+      holidays: JSON.parse(localStorage.getItem('holidays')||'{}'),
+      prefs: JSON.parse(localStorage.getItem('prefs')||JSON.stringify({
+        workdayStart: '09:00',
+        workdayEnd: '18:00',
+        slotMinutes: 30,
+        clock: '12',
+        holidaySunday: true
+      })),
+      dateKey: fmtDateKey(new Date()),
+      dragging: null,
+      minuteHeight: 2,
+      lastOpenedKey: localStorage.getItem('lastOpenedKey') || null,
+      highlightQuery: "",
+      // backup session state
+      backupHandle: null,
+      autoSaveEnabled: false,
+      writeLock: false
+    };
+    const save = async () => {
+      localStorage.setItem('tasksByDate', JSON.stringify(store.tasksByDate));
+      localStorage.setItem('dayNotes', JSON.stringify(store.dayNotes));
+      localStorage.setItem('holidays', JSON.stringify(store.holidays));
+      localStorage.setItem('prefs', JSON.stringify(store.prefs));
+      localStorage.setItem('lastOpenedKey', store.dateKey);
+      if (store.autoSaveEnabled && store.backupHandle) {
+        try { await backupWriteFile(); } catch (e) { console.warn('Auto-save failed:', e); }
+      }
+    };
+
+    // ---------- Date header ----------
+    const datePicker = $('#datePicker');
+    const dayLabel = $('#dayLabel');
+    function setDateKey(key){ store.dateKey = key; datePicker.value = key; renderDay(); }
+    function shiftDay(delta){ setDateKey(shiftKey(store.dateKey, delta)); }
+    $('#prevDay').onclick = () => shiftDay(-1);
+    $('#nextDay').onclick = () => shiftDay(1);
+    datePicker.onchange = e => setDateKey(e.target.value);
+
+    // ---------- Timeline + time rail ----------
+    const timeRail = document.getElementById('timeRail');
+    const timeMarks = document.getElementById('timeMarks');
+    const timeline = document.getElementById('timeline');
+    const nowLine = document.getElementById('nowLine');
+    const holidayBanner = document.getElementById('holidayBanner');
+
+    function buildTimeRail() {
+      timeMarks.innerHTML = '';
+      const start = parseHM(store.prefs.workdayStart);
+      const end = parseHM(store.prefs.workdayEnd);
+      const totalMin = minutesBetween(start, end);
+      const rows = Math.floor(totalMin / store.prefs.slotMinutes);
+      for (let i=0;i<=rows;i++) {
+        const t = new Date(start); t.setMinutes(start.getMinutes() + i*store.prefs.slotMinutes);
+        const hhmm = `${pad(t.getHours())}:${pad(t.getMinutes())}`;
+        const li = document.createElement('li');
+        li.className = 'py-3.5 text-slate-500';
+        li.textContent = fmtDisplay(hhmm);
+        timeMarks.appendChild(li);
+      }
+    }
+
+    function buildGrid() {
+      const start = parseHM(store.prefs.workdayStart);
+      const end = parseHM(store.prefs.workdayEnd);
+      const totalMin = minutesBetween(start,end);
+      const height = totalMin * store.minuteHeight;
+
+      timeline.innerHTML = '';
+      const grid = document.createElement('div');
+      grid.className = 'relative w-full';
+      grid.style.height = height + 'px';
+      grid.style.backgroundImage = 'linear-gradient(to bottom, var(--slate-grid) 1px, transparent 1px)';
+      grid.style.backgroundSize = `100% ${store.prefs.slotMinutes * store.minuteHeight}px`;
+      timeline.appendChild(grid);
+
+      const holiday = isHolidayKey(store.dateKey);
+      holidayBanner.classList.toggle('hidden', !holiday);
+      holidayBanner.classList.toggle('flex', holiday);
+
+      const todayKey = fmtDateKey(new Date());
+      if (store.dateKey === todayKey) {
+        const now = new Date();
+        const minutesSinceStart = Math.max(0, minutesBetween(start, now));
+        const y = minutesSinceStart * store.minuteHeight;
+        nowLine.style.top = y + 'px';
+        nowLine.classList.remove('hidden');
+      } else {
+        nowLine.classList.add('hidden');
+      }
+
+      (store.tasksByDate[store.dateKey] || []).forEach(task => renderTaskBlock(task, grid, start, end));
+
+      if (!holiday) {
+        grid.addEventListener('dblclick', (e) => {
+          const rect = grid.getBoundingClientRect();
+          const y = e.clientY - rect.top + timeline.scrollTop;
+          const startMin = Math.round(y / store.minuteHeight);
+          const duration = store.prefs.slotMinutes;
+          const s = new Date(start); s.setMinutes(start.getMinutes() + startMin);
+          const eT = new Date(s); eT.setMinutes(s.getMinutes() + duration);
+          openTaskDialog({ id: null, date: store.dateKey, startTime: `${pad(s.getHours())}:${pad(s.getMinutes())}`, endTime: `${pad(eT.getHours())}:${pad(eT.getMinutes())}`, title: '', description: '', completed:false });
+        });
+      }
+
+      timeRail.scrollTop = timeline.scrollTop;
+      timeline.addEventListener('scroll', () => { timeRail.scrollTop = timeline.scrollTop; });
+    }
+
+    function renderTaskBlock(task, grid, start, end) {
+      const block = document.createElement('div');
+      block.className = 'absolute left-3 right-3 md:left-8 md:right-8 rounded-xl ring-1 ring-slate-200/60 bg-white shadow-sm hover:shadow-md transition-shadow task-block';
+      block.dataset.id = task.id;
+
+      const s = parseHM(task.startTime || store.prefs.workdayStart);
+      const e = parseHM(task.endTime || store.prefs.workdayEnd);
+      const offsetMin = clamp(minutesBetween(start, s), 0, minutesBetween(start,end));
+      const durMin = Math.max(15, minutesBetween(s,e));
+      block.style.top = (offsetMin * store.minuteHeight) + 'px';
+      block.style.height = (durMin * store.minuteHeight) + 'px';
+
+      const label = `${fmtDisplay(task.startTime)}–${fmtDisplay(task.endTime)}`;
+      const titleCls = task.completed ? 'font-medium truncate line-through text-slate-500' : 'font-medium truncate';
+      const timeCls = task.completed ? 'text-xs text-slate-400' : 'text-xs text-slate-600';
+      const completeBtnCls = task.completed ? 'complete-btn size-4 rounded-full ring-1 ring-emerald-500/60 bg-emerald-500' : 'complete-btn size-4 rounded-full ring-1 ring-slate-300 hover:bg-emerald-100';
+      if (task.completed) block.classList.add('opacity-60');
+      block.innerHTML = `
+        <div class="flex items-center justify-between px-3 py-2 text-sm">
+          <div class="flex items-center gap-2 min-w-0">
+            <button class="${completeBtnCls}" title="Mark complete"></button>
+            <div class="${titleCls}">${task.title || '(Untitled)'}</div>
+          </div>
+          <div class="${timeCls}">${label}</div>
+        </div>
+        <div class="resize-handle w-full bg-slate-200/60 rounded-b-xl"></div>
+      `;
+      grid.appendChild(block);
+
+      if (store.highlightQuery && (task.title||'').toLowerCase().includes(store.highlightQuery)) {
+        block.dataset.match = '1';
+        block.classList.add('ring-2','ring-sky-400','animate-pulse');
+        setTimeout(()=>{ block.classList.remove('animate-pulse'); }, 1200);
+      }
+
+      const completeBtn = block.querySelector('.complete-btn');
+      if (completeBtn) {
+        completeBtn.addEventListener('click', async (ev) => {
+          ev.stopPropagation();
+          const list = store.tasksByDate[store.dateKey] || [];
+          const idx = list.findIndex(t => t.id === task.id);
+          if (idx > -1) {
+            list[idx].completed = !list[idx].completed;
+            await save();
+            renderDay();
+          }
+        });
+      }
+
+      block.addEventListener('click', () => { if (!store.dragging) openTaskDialog(task); });
+
+      block.addEventListener('pointerdown', (ev) => {
+        if (ev.button !== 0) return;
+        ev.preventDefault();
+        const startY = ev.clientY + timeline.scrollTop;
+        const isResize = ev.target.classList.contains('resize-handle');
+        store.dragging = { id: task.id, startMouseY: startY, origTop: parseFloat(block.style.top), origHeight: parseFloat(block.style.height), isResize };
+        block.classList.add('dragging', 'no-select');
+
+        const onMove = (e) => {
+          const currentY = e.clientY + timeline.scrollTop;
+          const dy = currentY - store.dragging.startMouseY;
+          if (store.dragging.isResize) {
+            const newH = Math.max(15*store.minuteHeight, store.dragging.origHeight + dy);
+            block.style.height = newH + 'px';
+          } else {
+            const newTop = clamp(store.dragging.origTop + dy, 0, grid.offsetHeight - block.offsetHeight);
+            block.style.top = newTop + 'px';
+          }
+        };
+        const onUp = async () => {
+          block.classList.remove('dragging', 'no-select');
+          document.removeEventListener('pointermove', onMove);
+          const top = parseFloat(block.style.top);
+          const height = parseFloat(block.style.height);
+          const slot = store.prefs.slotMinutes * store.minuteHeight;
+          const snappedTop = Math.round(top / slot) * slot;
+          const snappedHeight = Math.round(height / slot) * slot;
+          block.style.top = snappedTop + 'px';
+          block.style.height = Math.max(snappedHeight, 15*store.minuteHeight) + 'px';
+
+          const startMin = Math.round(snappedTop / store.minuteHeight);
+          const durMin = Math.round(block.offsetHeight / store.minuteHeight);
+          const s2 = new Date(parseHM(store.prefs.workdayStart)); s2.setMinutes(s2.getMinutes()+startMin);
+          const e2 = new Date(s2); e2.setMinutes(s2.getMinutes()+durMin);
+
+          const list = store.tasksByDate[store.dateKey] || [];
+          const idx = list.findIndex(t => t.id === task.id);
+          if (idx > -1) {
+            list[idx].startTime = `${pad(s2.getHours())}:${pad(s2.getMinutes())}`;
+            list[idx].endTime   = `${pad(e2.getHours())}:${pad(e2.getMinutes())}`;
+            await save();
+            const timeEl = block.querySelector('.text-xs');
+            if (timeEl) timeEl.textContent = `${fmtDisplay(list[idx].startTime)}–${fmtDisplay(list[idx].endTime)}`;
+          }
+          store.dragging = null;
+        };
+        document.addEventListener('pointermove', onMove);
+        document.addEventListener('pointerup', onUp, { once: true });
+      });
+    }
+
+    // ---------- Task dialog ----------
+    const taskDialog = $('#taskDialog');
+    const taskForm = $('#taskForm');
+    const taskDesc = $('#taskDesc');
+    const taskTitle = $('#taskTitle');
+    const taskDate = $('#taskDate');
+    const taskStart = $('#taskStart');
+    const taskEnd = $('#taskEnd');
+    const taskCompleted = $('#taskCompleted');
+    const deleteTaskBtn = $('#deleteTask');
+    const cancelTaskBtn = $('#cancelTask');
+    const taskCloseBtn = $('#taskClose');
+
+    let editingId = null;
+
+    function smartTitleFrom(desc) {
+      let s = String(desc||'');
+      let out = ''; let prevSpace = false;
+      for (let i=0;i<s.length;i++){
+        const code = s.charCodeAt(i);
+        const isWs = code===9||code===10||code===13||code===32;
+        if (isWs){ if (!prevSpace){ out += ' '; prevSpace = true; } }
+        else { out += s[i]; prevSpace = false; }
+      }
+      s = out.trim();
+      if (!s) return '';
+      const isAlphaNum = (ch)=>{ const c = ch.charCodeAt(0); return (c>=48&&c<=57)||(c>=65&&c<=90)||(c>=97&&c<=122); };
+      while (s && !isAlphaNum(s[0])) s = s.slice(1);
+      if (!s) return '';
+      const closers = new Set([34,39,41,93,187,8221]);
+      const len = s.length; let end = len;
+      for (let i=0;i<len;i++){
+        const ch = s[i];
+        if (ch==='.'||ch==='!'||ch==='?'){
+          let j=i+1; while (j<len && closers.has(s.charCodeAt(j))) j++;
+          if (j>=len || s[j]===' '){ end = i; break; }
+        }
+      }
+      let first = s.slice(0,end);
+      while (first && !isAlphaNum(first[0])) first = first.slice(1);
+      while (first && !isAlphaNum(first[first.length-1])) first = first.slice(0,-1);
+      if (first.length>60) first = first.slice(0,60);
+      return first;
+    }
+
+    function openTaskDialog(task) {
+      editingId = task.id || null;
+      taskDesc.value = task.description || '';
+      taskTitle.value = task.title || smartTitleFrom(task.description || '');
+      taskTitle.dataset.manual = task.title ? 'true' : '';
+      taskDate.value = task.date || store.dateKey;
+      taskStart.value = task.startTime || store.prefs.workdayStart;
+      taskEnd.value = task.endTime || store.prefs.workdayEnd;
+      taskCompleted.checked = !!task.completed;
+      deleteTaskBtn.classList.toggle('hidden', !editingId);
+      taskDialog.showModal();
+    }
+
+    taskDesc.addEventListener('input', () => {
+      if (taskTitle.dataset.manual !== 'true') taskTitle.value = smartTitleFrom(taskDesc.value);
+    });
+    taskTitle.addEventListener('input', () => { taskTitle.dataset.manual = 'true'; });
+
+    taskForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const t = {
+        id: editingId || crypto.randomUUID(),
+        title: taskTitle.value.trim() || '(Untitled)',
+        description: taskDesc.value.trim(),
+        date: taskDate.value,
+        startTime: taskStart.value,
+        endTime: taskEnd.value,
+        completed: !!taskCompleted.checked
+      };
+      if (!store.tasksByDate[t.date]) store.tasksByDate[t.date] = [];
+      const list = store.tasksByDate[t.date];
+      const idx = list.findIndex(x => x.id === t.id);
+      if (idx > -1) list[idx] = t; else list.push(t);
+      await save();
+      taskDialog.close();
+      renderDay();
+    });
+
+    deleteTaskBtn.addEventListener('click', async () => {
+      const date = taskDate.value;
+      const list = store.tasksByDate[date] || [];
+      store.tasksByDate[date] = list.filter(x => x.id !== editingId);
+      await save();
+      taskDialog.close();
+      renderDay();
+    });
+
+    cancelTaskBtn.addEventListener('click', () => taskDialog.close());
+    taskCloseBtn.addEventListener('click', () => taskDialog.close());
+
+    // ---------- Holiday helpers ----------
+    const isSundayKey = (key) => toDateFromKey(key).getDay() === 0;
+    const isHolidayKey = (key) => !!(store.holidays[key] || (store.prefs.holidaySunday && isSundayKey(key)));
+
+    // ---------- Preferences ----------
+    const prefsDialog = document.getElementById('prefsDialog');
+    const prefsCloseBtn = document.getElementById('prefsClose');
+    document.getElementById('prefsBtn').onclick = async () => {
+      document.getElementById('prefStart').value = store.prefs.workdayStart;
+      document.getElementById('prefEnd').value = store.prefs.workdayEnd;
+      document.getElementById('prefSlot').value = store.prefs.slotMinutes;
+      document.getElementById('prefClock').value = store.prefs.clock || '12';
+      document.getElementById('backupSupportBadge').textContent = supportsFS ? 'File System Access: supported' : 'File System Access: not supported';
+      const autoToggle = document.getElementById('autoSaveToggle');
+      const saveNowBtn = document.getElementById('backupSaveNowBtn');
+      autoToggle.checked = store.autoSaveEnabled && !!store.backupHandle;
+      autoToggle.disabled = !store.backupHandle;
+      saveNowBtn.disabled = !store.backupHandle;
+      prefsDialog.showModal();
+    };
+    document.getElementById('cancelPrefs').onclick = () => prefsDialog.close();
+    prefsCloseBtn.onclick = () => prefsDialog.close();
+    document.getElementById('prefClock').addEventListener('change', async (e)=>{ store.prefs.clock = e.target.value === '24' ? '24' : '12'; await save(); renderDay(); });
+    document.getElementById('prefsForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      store.prefs.workdayStart = document.getElementById('prefStart').value;
+      store.prefs.workdayEnd   = document.getElementById('prefEnd').value;
+      store.prefs.slotMinutes  = Math.max(5, parseInt(document.getElementById('prefSlot').value||'30',10));
+      store.prefs.clock        = document.getElementById('prefClock').value === '24' ? '24' : '12';
+      await save(); prefsDialog.close(); renderDay();
+    });
+
+    // ---------- Backup (Option 1) ----------
+    function backupPayload(){
+      return JSON.stringify({
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        tasksByDate: store.tasksByDate,
+        dayNotes: store.dayNotes,
+        holidays: store.holidays,
+        prefs: store.prefs
+      }, null, 2);
+    }
+    async function backupWriteFile(){
+      if (!store.backupHandle) return;
+      if (store.writeLock) return;
+      store.writeLock = true;
+      try{
+        const writable = await store.backupHandle.createWritable();
+        await writable.write(new Blob([backupPayload()], { type: 'application/json' }));
+        await writable.close();
+      } finally {
+        store.writeLock = false;
+      }
+    }
+
+    document.getElementById('exportJsonBtn').onclick = () => {
+      const blob = new Blob([backupPayload()], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `DayPlanner-${store.dateKey}.json`;
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    };
+    document.getElementById('importJsonBtn').onclick = async () => {
+      try{
+        const [fileHandle] = await window.showOpenFilePicker?.({
+          types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }]
+        }) || [];
+        if (!fileHandle) return;
+        const file = await fileHandle.getFile();
+        const text = await file.text();
+        const data = JSON.parse(text || '{}');
+        if (!data || typeof data !== 'object' || !('tasksByDate' in data)) { alert('Invalid backup file.'); return; }
+        const mode = confirm('Import as REPLACE?\nOK = Replace everything\nCancel = Merge into existing') ? 'replace' : 'merge';
+        if (mode === 'replace') {
+          store.tasksByDate = data.tasksByDate || {};
+          store.dayNotes = data.dayNotes || {};
+          store.holidays = data.holidays || {};
+          store.prefs = data.prefs || store.prefs;
+        } else {
+          store.tasksByDate = { ...(store.tasksByDate||{}), ...(data.tasksByDate||{}) };
+          store.dayNotes = { ...(store.dayNotes||{}), ...(data.dayNotes||{}) };
+          store.holidays = { ...(store.holidays||{}), ...(data.holidays||{}) };
+          store.prefs = { ...(store.prefs||{}), ...(data.prefs||{}) };
+        }
+        await save(); renderDay();
+        alert('Import complete.');
+      } catch(e){ console.warn(e); alert('Import cancelled or failed.'); }
+    };
+    document.getElementById('chooseBackupFileBtn').onclick = async () => {
+      if (!supportsFS) { alert('Your browser does not support the File System Access API. Use Export/Import instead.'); return; }
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: `DayPlanner-${store.dateKey}.json`,
+          types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }]
+        });
+        store.backupHandle = handle;
+        await idbPut('backupHandle', handle);          // remember across reloads
+        await backupWriteFile();                       // initial write
+        store.autoSaveEnabled = true;
+        const autoToggle = document.getElementById('autoSaveToggle');
+        const saveNowBtn = document.getElementById('backupSaveNowBtn');
+        autoToggle.disabled = false; autoToggle.checked = true;
+        saveNowBtn.disabled = false;
+        alert('Backup file chosen. Auto-save is ON and will be remembered.');
+      } catch(e) { console.warn('Choose file cancelled', e); }
+    };
+    document.getElementById('backupSaveNowBtn').onclick = async () => {
+      if (!store.backupHandle) return;
+      try { await backupWriteFile(); alert('Saved to backup file.'); } catch (e) { alert('Save failed. See console.'); }
+    };
+    document.getElementById('autoSaveToggle').addEventListener('change', (e)=> {
+      store.autoSaveEnabled = !!e.target.checked && !!store.backupHandle;
+    });
+    document.getElementById('forgetBackupBtn').onclick = async () => {
+      try { await idbPut('backupHandle', null); } catch {}
+      store.backupHandle = null; store.autoSaveEnabled = false;
+      alert('Backup file disconnected. Pick a new one any time.');
+    };
+
+    // ---------- Share dialog helpers ----------
+    const shareDialog = document.getElementById('shareDialog');
+    const shareTextEl = document.getElementById('shareText');
+    const openShareDialog = (text) => { shareTextEl.value = text; shareDialog.showModal(); };
+    document.getElementById('shareCloseBtn').onclick = () => shareDialog.close();
+    document.getElementById('shareCopyBtn').onclick = async () => {
+      try { await navigator.clipboard.writeText(shareTextEl.value); alert('Copied to clipboard'); }
+      catch {
+        shareTextEl.focus(); shareTextEl.select();
+        try { document.execCommand && document.execCommand('copy'); alert('Copied'); } catch { /* ignore */ }
+      }
+    };
+    document.getElementById('shareDownloadBtn').onclick = () => {
+      const blob = new Blob([shareTextEl.value], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = `DayPlan-${store.dateKey}.txt`;
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    };
+
+    // ---------- Search helpers (+ Next) ----------
+    function findDatesByTitle(q){
+      const query = String(q||'').trim().toLowerCase();
+      if (!query) return [];
+      const dates = [];
+      for (const [k, list] of Object.entries(store.tasksByDate)){
+        if ((list||[]).some(t => String(t.title||'').toLowerCase().includes(query))) dates.push(k);
+      }
+      dates.sort();
+      return dates;
+    }
+    function scrollToFirstMatch(){
+      const el = document.querySelector('#timeline .task-block[data-match="1"]');
+      if (el) document.getElementById('timeline').scrollTo({ top: Math.max(0, el.offsetTop - 48), behavior: 'smooth' });
+    }
+    let searchMatches = [];
+    let searchIndex = 0;
+    function navigateToSearchAt(idx){
+      if (!searchMatches.length) return;
+      searchIndex = (idx + searchMatches.length) % searchMatches.length;
+      const target = searchMatches[searchIndex];
+      setDateKey(target);
+      setTimeout(scrollToFirstMatch, 0);
+      $('#searchNextBtn').classList.toggle('hidden', searchMatches.length < 2);
+    }
+    function runSearch(){
+      const q = $('#taskSearch').value;
+      const matches = findDatesByTitle(q);
+      if (!matches.length){ alert(`No task found for "${q}"`); return; }
+      store.highlightQuery = q.toLowerCase();
+      searchMatches = matches; searchIndex = 0;
+      navigateToSearchAt(0);
+    }
+    document.getElementById('taskSearch').addEventListener('keydown', (e)=>{ if (e.key === 'Enter'){ e.preventDefault(); runSearch(); } });
+    document.getElementById('taskSearch').addEventListener('search', ()=> runSearch());
+    document.getElementById('searchNextBtn').addEventListener('click', ()=> navigateToSearchAt(searchIndex+1));
+
+    // ---------- Auto-postpone ----------
+    function chooseBestFutureDate(startKey, horizon=14){
+      const candidates = [];
+      for (let i=0;i<=horizon;i++) {
+        const k = shiftKey(startKey, i);
+        if (isHolidayKey(k)) continue;
+        const count = ((store.tasksByDate[k]||[]).filter(t=>!t.completed)).length;
+        candidates.push({k, count});
+      }
+      if (candidates.length === 0) return startKey;
+      candidates.sort((a,b)=> a.count===b.count ? (a.k < b.k ? -1:1) : a.count - b.count);
+      return candidates[0].k;
+    }
+    function overlaps(aStart, aEnd, bStart, bEnd){ return aStart < bEnd && bStart < aEnd; }
+    function findFirstFreeSlot(dateKey, durationMin){
+      const start = parseHM(store.prefs.workdayStart);
+      const end = parseHM(store.prefs.workdayEnd);
+      const tasks = (store.tasksByDate[dateKey]||[]).filter(t=>!t.completed).map(t=>({ s: parseHM(t.startTime), e: parseHM(t.endTime) }));
+      for (let tMin = 0; tMin <= minutesBetween(start,end)-durationMin; tMin += store.prefs.slotMinutes) {
+        const s = new Date(start); s.setMinutes(start.getMinutes()+tMin);
+        const e = new Date(s); e.setMinutes(s.getMinutes()+durationMin);
+        const conflict = tasks.some(x => overlaps(s,e,x.s,x.e));
+        if (!conflict) return { start: s, end: e };
+      }
+      const s = new Date(end); s.setMinutes(end.getMinutes()-durationMin);
+      const e = new Date(end);
+      return { start:s, end:e };
+    }
+    function postponeOverdueFromYesterdayOnce(){
+      const today = fmtDateKey(new Date());
+      if (store.lastOpenedKey === today) return;
+      const yest = shiftKey(today, -1);
+      const list = (store.tasksByDate[yest]||[]);
+      if (!list.length) { store.lastOpenedKey = today; save(); return; }
+      const remaining = list.filter(t=>!t.completed);
+      if (remaining.length===0) { store.lastOpenedKey = today; save(); return; }
+      remaining.forEach(t => {
+        const dur = minutesBetween(parseHM(t.startTime||store.prefs.workdayStart), parseHM(t.endTime||store.prefs.workdayEnd));
+        const targetDate = chooseBestFutureDate(today, 14);
+        const slot = findFirstFreeSlot(targetDate, Math.max(15, dur));
+        const moved = { ...t, id: crypto.randomUUID(), date: targetDate, startTime: `${pad(slot.start.getHours())}:${pad(slot.start.getMinutes())}`, endTime: `${pad(slot.end.getHours())}:${pad(slot.end.getMinutes())}` };
+        if (!store.tasksByDate[targetDate]) store.tasksByDate[targetDate] = [];
+        store.tasksByDate[targetDate].push(moved);
+      });
+      store.tasksByDate[yest] = list.filter(t=>t.completed);
+      store.lastOpenedKey = today; save();
+    }
+
+    // ---------- Render ----------
+    function renderDay() {
+      const d = toDateFromKey(store.dateKey);
+      const headerText = `${d.toLocaleDateString(undefined,{weekday:'long'})} ${d.toLocaleDateString(undefined,{day:'numeric', month:'short'})}`;
+      dayLabel.textContent = headerText;
+      datePicker.value = store.dateKey;
+      dayNote.value = store.dayNotes[store.dateKey] || '';
+      addBtn.classList.toggle('opacity-50', isHolidayKey(store.dateKey));
+      buildTimeRail();
+      buildGrid();
+    }
+
+    // ---------- Init + tests ----------
+    const addBtn = document.getElementById('addTaskFab');
+    addBtn.onclick = () => {
+      if (isHolidayKey(store.dateKey)) { alert('This day is marked as Holiday. Adding new tasks is disabled.'); return; }
+      openTaskDialog({ id: null, date: store.dateKey, startTime: store.prefs.workdayStart, endTime: store.prefs.workdayEnd, title: '', description: '', completed:false });
+    };
+    document.getElementById('shareBtn').onclick = async () => {
+      const d = toDateFromKey(store.dateKey);
+      const header = d.toLocaleDateString(undefined, { weekday:'long', month:'short', day:'numeric', year:'numeric' });
+      const tasks = (store.tasksByDate[store.dateKey]||[]).filter(t=>!t.completed).sort((a,b)=> (a.startTime||'') < (b.startTime||'') ? -1 : 1);
+      const lines = [`${header}${isHolidayKey(store.dateKey) ? ' — Holiday' : ''}`, ''];
+      if (tasks.length === 0) lines.push('(No tasks)');
+      tasks.forEach(t => lines.push(`• ${fmtDisplay(t.startTime)}–${fmtDisplay(t.endTime)}  ${t.title} — ${t.description||''}`.trim()));
+      const text = lines.join('\n');
+      try { if (navigator.share) { await navigator.share({ title: `Plan for ${store.dateKey}`, text }); return; } } catch(_) {}
+      openShareDialog(text);
+    };
+    document.getElementById('holidayToggle').onclick = async () => { const k = store.dateKey; if (store.holidays[k]) delete store.holidays[k]; else store.holidays[k] = true; await save(); renderDay(); };
+
+    (async function init(){
+      if (!store.tasksByDate[store.dateKey]) {
+        const d = store.dateKey;
+        store.tasksByDate[d] = [
+          { id: crypto.randomUUID(), date:d, title: 'Standup with team', description:'Daily sync', startTime:'10:00', endTime:'10:30', completed:false },
+          { id: crypto.randomUUID(), date:d, title: 'Design review', description:'Sprint UI polish', startTime:'14:00', endTime:'15:00', completed:false }
+        ];
+        await save();
+      }
+
+      // Try to persist storage and restore remembered backup file
+      try {
+        await navigator.storage?.persist?.();
+        const savedHandle = await idbGet('backupHandle');
+        if (savedHandle && supportsFS) {
+          // Ask/query for permission (Chrome: queryPermission first)
+          let perm = savedHandle.queryPermission ? await savedHandle.queryPermission({mode:'readwrite'}) : 'prompt';
+          if (perm !== 'granted' && savedHandle.requestPermission) {
+            perm = await savedHandle.requestPermission({mode:'readwrite'});
+          }
+          if (perm === 'granted') {
+            store.backupHandle = savedHandle;
+            store.autoSaveEnabled = true;
+            await backupWriteFile(); // ensure file has current state
+            console.log('[Backup] Auto-save resumed with remembered file.');
+          } else {
+            console.log('[Backup] Handle remembered but permission not granted yet.');
+          }
+        }
+      } catch(e){ console.warn('Restore backup handle failed:', e); }
+
+      postponeOverdueFromYesterdayOnce();
+      setDateKey(store.dateKey);
+      runUnitTests();
+    })();
+
+    function runUnitTests(){
+      function expectEqual(name, got, want){ const pass = got === want; console[pass ? 'log' : 'error'](`[TEST] ${name}:`, pass ? 'ok' : `got "${got}", want "${want}"`); }
+      function expect(name, cond){ console[cond ? 'log' : 'error'](`[TEST] ${name}:`, cond ? 'ok' : 'failed'); }
+
+      expectEqual('smartTitleFrom empty', smartTitleFrom(''), '');
+      expectEqual('smartTitleFrom simple', smartTitleFrom('Do the thing.'), 'Do the thing');
+      expectEqual('smartTitleFrom newline', smartTitleFrom('Hello\nworld'), 'Hello world');
+      expectEqual('smartTitleFrom punct lead', smartTitleFrom('!!! Wow. Okay'), 'Wow');
+      const longIn = Array(40).fill('abcd').join('');
+      expectEqual('smartTitleFrom cap 60', smartTitleFrom(longIn), longIn.slice(0,60));
+      expectEqual('smartTitleFrom emoji lead', smartTitleFrom('🔥 Ship build. Then rest'), 'Ship build');
+      expectEqual('smartTitleFrom quotes lead', smartTitleFrom('"Hello?" Next'), 'Hello');
+      expectEqual('smartTitleFrom underscores lead', smartTitleFrom('___Title?? Something'), 'Title');
+      expectEqual('smartTitleFrom punct only', smartTitleFrom('!!!'), '');
+      expectEqual('smartTitleFrom dash sentence', smartTitleFrom('— Plan this – now! Later'), 'Plan this – now');
+
+      const tdy = store.dateKey;
+      const fut = shiftKey(tdy, 3);
+      store.tasksByDate[fut] = [ { id:'s1', date:fut, title:'Standup follow-up', startTime:'11:00', endTime:'11:30', completed:false } ];
+      const res = findDatesByTitle('standup');
+      expect('search finds today or future', res.includes(tdy) || res.includes(fut));
+      const sorted = [...res].sort();
+      expectEqual('search results sorted', res.join(','), sorted.join(','));
+
+      const today = fmtDateKey(new Date());
+      const testDay = shiftKey(today,2);
+      store.tasksByDate[testDay] = [
+        { id:'a', date:testDay, title:'A', startTime:'09:00', endTime:'10:00', completed:false },
+        { id:'b', date:testDay, title:'B', startTime:'10:00', endTime:'10:30', completed:false },
+      ];
+      const slot = findFirstFreeSlot(testDay, 60);
+      const sHM = `${pad(slot.start.getHours())}:${pad(slot.start.getMinutes())}`;
+      expectEqual('free slot starts at 10:30', sHM, '10:30');
+
+      expect('supportsFS is boolean', typeof supportsFS === 'boolean');
+      idbPut('__selftest__', {ok:true}).then(()=>console.log('[TEST] idbPut ok')).catch(()=>console.error('[TEST] idbPut fail'));
+      const payload = (function(){ try { return backupPayload(); } catch { return ''; } })();
+      expect('backupPayload is JSON string', typeof payload === 'string' && payload.trim().startsWith('{'));
+    }
+  </script>
+</body>
+</html>
