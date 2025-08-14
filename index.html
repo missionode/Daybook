@@ -939,8 +939,8 @@ function setupSwipeNav(el) {
       if (!store.tasksByDate[store.dateKey]) {
         const d = store.dateKey;
         store.tasksByDate[d] = [
-          { id: crypto.randomUUID(), date:d, title: 'Standup with team', description:'Daily sync', startTime:'10:00', endTime:'10:30', completed:false },
-          { id: crypto.randomUUID(), date:d, title: 'Design review', description:'Sprint UI polish', startTime:'14:00', endTime:'15:00', completed:false }
+          { id: crypto.randomUUID(), date:d, title: 'Good Day', description:'Greetings Welcome to Day book, Wish you a bright future ahead', startTime:'10:00', endTime:'10:30', completed:false },
+          { id: crypto.randomUUID(), date:d, title: 'Meeting', description:'Just Spend some good time meeting someone andstart follow up in the future', startTime:'14:00', endTime:'15:00', completed:false }
         ];
         await save();
       }
