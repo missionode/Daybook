@@ -20,6 +20,23 @@
     @keyframes modalIn{ from{ opacity:0; transform: translateY(8px) scale(.98);} to{opacity:1; transform:none;} }
     .holiday-banner { position:absolute; inset:0; align-items:center; justify-content:center; pointer-events:none; }
     #timeline, #timeRail { touch-action: pan-y; }
+    /* Hide scrollbars for the timeline + time rail (keep scroll functional) */
+    #timeline, #timeRail{
+      scrollbar-width: none;          /* Firefox */
+      -ms-overflow-style: none;       /* IE/Edge legacy */
+    }
+    #timeline::-webkit-scrollbar,
+    #timeRail::-webkit-scrollbar{
+      width: 0;
+      height: 0;
+      display: none;                  /* Chrome/Safari/Edge */
+    }
+    
+    /* Optional: keep layout stable when scrollbars would appear */
+    #timeline, #timeRail{
+      scrollbar-gutter: stable both-edges;
+    }
+
 
  </style>
 </head>
