@@ -884,7 +884,7 @@
 
     // --- Swipe navigation (touch) ---
     function swipeDecision(dx, dy) {
-      // return -1 for left, +1 for right, 0 for no-swipe
+      // return +1 for left, -1 for right, 0 for no-swipe
       const ADX = Math.abs(dx), ADY = Math.abs(dy);
       const H_THRESHOLD = 60;           // min horizontal distance in px
       const DOMINANCE = 1.2;            // must be this much stronger than vertical
