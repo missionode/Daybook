@@ -203,9 +203,14 @@
     const $ = sel => document.querySelector(sel);
     const pad = n => String(n).padStart(2,'0');
     const fmtDateKey = (d) => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+    const todayKey = () => fmtDateKey(new Date());
     const toDateFromKey = (key) => { const [y,m,dd] = key.split('-').map(Number); return new Date(y, m-1, dd); };
     const minutesBetween = (a,b) => (b.getHours()*60+b.getMinutes()) - (a.getHours()*60+a.getMinutes());
     const clamp = (x, min, max) => Math.max(min, Math.min(max, x));
+    const parseHM = (hm) => { const [h,m] = hm.split(':').map(Number); const d = new Date(); d.setHours(h,m,0,0); return d; };
+    const toMin = (hm) => { const [h,m] = hm.split(':').map(Number); return h*60+m; };
+    const fromMin = (mins) => `${pad(Math.floor(mins/60))}:${pad(mins%60)}`;
+    const shiftKey = (key, delta) => { const d = toDateFromKey(key); d.setDate(d.getDate()+delta); return fmtDateKey(d); };
     const fmtDisplay = (hhmm) => {
       if (!hhmm) return '';
       const [H, M] = hhmm.split(':').map(Number);
@@ -214,11 +219,8 @@
       let h = H % 12; if (h === 0) h = 12;
       return `${h}:${pad(M)} ${ampm}`;
     };
-    const shiftKey = (key, delta) => { const d = toDateFromKey(key); d.setDate(d.getDate()+delta); return fmtDateKey(d); };
-    const parseHM = (hm) => { const [h,m] = hm.split(':').map(Number); const d = new Date(); d.setHours(h,m,0,0); return d; };
-    const supportsFS = !!(window.showSaveFilePicker && window.FileSystemWritableFileStream);
 
-    // --- IndexedDB tiny KV to remember FileSystemHandles ---
+    // --- IndexedDB tiny KV (remember FileSystemHandle) ---
     const IDB_NAME='dayplanner', IDB_STORE='kv';
     function idbPut(key, val){ return new Promise((res, rej)=>{
       const open = indexedDB.open(IDB_NAME,1);
@@ -238,6 +240,7 @@
     });}
 
     // ---------- State ----------
+    const supportsFS = !!(window.showSaveFilePicker && window.FileSystemWritableFileStream);
     const store = {
       tasksByDate: JSON.parse(localStorage.getItem('tasksByDate')||'{}'),
       dayNotes: JSON.parse(localStorage.getItem('dayNotes')||'{}'),
@@ -254,12 +257,20 @@
       minuteHeight: 2,
       lastOpenedKey: localStorage.getItem('lastOpenedKey') || null,
       highlightQuery: "",
-      // backup session state
+      // backup
       backupHandle: null,
       autoSaveEnabled: false,
       writeLock: false
     };
-    const save = async () => {
+
+    // ---------- Lock rules ----------
+    const isSundayKey = (key) => toDateFromKey(key).getDay() === 0;
+    const isHolidayKey = (key) => !!(store.holidays[key] || (store.prefs.holidaySunday && isSundayKey(key)));
+    const isPastKey = (key) => key < todayKey();
+    const isLockedKey = (key) => isPastKey(key) || isHolidayKey(key);
+
+    // ---------- Persist ----------
+    async function save() {
       localStorage.setItem('tasksByDate', JSON.stringify(store.tasksByDate));
       localStorage.setItem('dayNotes', JSON.stringify(store.dayNotes));
       localStorage.setItem('holidays', JSON.stringify(store.holidays));
@@ -268,7 +279,20 @@
       if (store.autoSaveEnabled && store.backupHandle) {
         try { await backupWriteFile(); } catch (e) { console.warn('Auto-save failed:', e); }
       }
-    };
+    }
+
+    // ---------- Conflict detection ----------
+    function hasConflict(dateKey, startHM, endHM, excludeId=null){
+      const sA = toMin(startHM), eA = toMin(endHM);
+      if (!(eA > sA)) return true; // invalid or zero duration
+      const list = store.tasksByDate[dateKey] || [];
+      for (const t of list){
+        if (excludeId && t.id === excludeId) continue;
+        const sB = toMin(t.startTime), eB = toMin(t.endTime);
+        if (sA < eB && sB < eA) return true; // overlap
+      }
+      return false;
+    }
 
     // ---------- Date header ----------
     const datePicker = $('#datePicker');
@@ -316,12 +340,12 @@
       grid.style.backgroundSize = `100% ${store.prefs.slotMinutes * store.minuteHeight}px`;
       timeline.appendChild(grid);
 
-      const holiday = isHolidayKey(store.dateKey);
-      holidayBanner.classList.toggle('hidden', !holiday);
-      holidayBanner.classList.toggle('flex', holiday);
+      const locked = isLockedKey(store.dateKey);
+      holidayBanner.classList.toggle('hidden', !isHolidayKey(store.dateKey));
+      holidayBanner.classList.toggle('flex', isHolidayKey(store.dateKey));
 
-      const todayKey = fmtDateKey(new Date());
-      if (store.dateKey === todayKey) {
+      const todayK = todayKey();
+      if (store.dateKey === todayK) {
         const now = new Date();
         const minutesSinceStart = Math.max(0, minutesBetween(start, now));
         const y = minutesSinceStart * store.minuteHeight;
@@ -331,9 +355,9 @@
         nowLine.classList.add('hidden');
       }
 
-      (store.tasksByDate[store.dateKey] || []).forEach(task => renderTaskBlock(task, grid, start, end));
+      (store.tasksByDate[store.dateKey] || []).forEach(task => renderTaskBlock(task, grid, start, end, locked));
 
-      if (!holiday) {
+      if (!locked) {
         grid.addEventListener('dblclick', (e) => {
           const rect = grid.getBoundingClientRect();
           const y = e.clientY - rect.top + timeline.scrollTop;
@@ -345,11 +369,20 @@
         });
       }
 
+      // rAF scroll sync
+      let ticking = false;
+      timeline.addEventListener('scroll', () => {
+        if (ticking) return;
+        ticking = true;
+        requestAnimationFrame(() => {
+          timeRail.scrollTop = timeline.scrollTop;
+          ticking = false;
+        });
+      });
       timeRail.scrollTop = timeline.scrollTop;
-      timeline.addEventListener('scroll', () => { timeRail.scrollTop = timeline.scrollTop; });
     }
 
-    function renderTaskBlock(task, grid, start, end) {
+    function renderTaskBlock(task, grid, start, end, locked) {
       const block = document.createElement('div');
       block.className = 'absolute left-3 right-3 md:left-8 md:right-8 rounded-xl ring-1 ring-slate-200/60 bg-white shadow-sm hover:shadow-md transition-shadow task-block';
       block.dataset.id = task.id;
@@ -369,7 +402,7 @@
       block.innerHTML = `
         <div class="flex items-center justify-between px-3 py-2 text-sm">
           <div class="flex items-center gap-2 min-w-0">
-            <button class="${completeBtnCls}" title="Mark complete"></button>
+            <button class="${completeBtnCls}" title="Mark complete"${locked?' disabled':''}></button>
             <div class="${titleCls}">${task.title || '(Untitled)'}</div>
           </div>
           <div class="${timeCls}">${label}</div>
@@ -383,6 +416,9 @@
         block.classList.add('ring-2','ring-sky-400','animate-pulse');
         setTimeout(()=>{ block.classList.remove('animate-pulse'); }, 1200);
       }
+
+      block.addEventListener('click', () => openTaskDialog(task, locked));
+      if (locked) return;
 
       const completeBtn = block.querySelector('.complete-btn');
       if (completeBtn) {
@@ -398,8 +434,7 @@
         });
       }
 
-      block.addEventListener('click', () => { if (!store.dragging) openTaskDialog(task); });
-
+      // Drag / resize with overlap guard
       block.addEventListener('pointerdown', (ev) => {
         if (ev.button !== 0) return;
         ev.preventDefault();
@@ -422,6 +457,7 @@
         const onUp = async () => {
           block.classList.remove('dragging', 'no-select');
           document.removeEventListener('pointermove', onMove);
+
           const top = parseFloat(block.style.top);
           const height = parseFloat(block.style.height);
           const slot = store.prefs.slotMinutes * store.minuteHeight;
@@ -434,19 +470,27 @@
           const durMin = Math.round(block.offsetHeight / store.minuteHeight);
           const s2 = new Date(parseHM(store.prefs.workdayStart)); s2.setMinutes(s2.getMinutes()+startMin);
           const e2 = new Date(s2); e2.setMinutes(s2.getMinutes()+durMin);
+          const newStart = `${pad(s2.getHours())}:${pad(s2.getMinutes())}`;
+          const newEnd   = `${pad(e2.getHours())}:${pad(e2.getMinutes())}`;
 
-          const list = store.tasksByDate[store.dateKey] || [];
-          const idx = list.findIndex(t => t.id === task.id);
-          if (idx > -1) {
-            list[idx].startTime = `${pad(s2.getHours())}:${pad(s2.getMinutes())}`;
-            list[idx].endTime   = `${pad(e2.getHours())}:${pad(e2.getMinutes())}`;
-            await save();
-            const timeEl = block.querySelector('.text-xs');
-            if (timeEl) timeEl.textContent = `${fmtDisplay(list[idx].startTime)}–${fmtDisplay(list[idx].endTime)}`;
+          if (hasConflict(store.dateKey, newStart, newEnd, task.id)) {
+            block.style.top = store.dragging.origTop + 'px';
+            block.style.height = store.dragging.origHeight + 'px';
+            alert('Time overlaps another task. Move to a free slot.');
+          } else {
+            const list = store.tasksByDate[store.dateKey] || [];
+            const idx = list.findIndex(t => t.id === task.id);
+            if (idx > -1) {
+              list[idx].startTime = newStart;
+              list[idx].endTime   = newEnd;
+              await save();
+              const timeEl = block.querySelector('.text-xs');
+              if (timeEl) timeEl.textContent = `${fmtDisplay(newStart)}–${fmtDisplay(newEnd)}`;
+            }
           }
           store.dragging = null;
         };
-        document.addEventListener('pointermove', onMove);
+        document.addEventListener('pointermove', onMove, { passive: true });
         document.addEventListener('pointerup', onUp, { once: true });
       });
     }
@@ -463,9 +507,9 @@
     const deleteTaskBtn = $('#deleteTask');
     const cancelTaskBtn = $('#cancelTask');
     const taskCloseBtn = $('#taskClose');
-
     let editingId = null;
 
+    // Quote-aware title extraction
     function smartTitleFrom(desc) {
       let s = String(desc||'');
       let out = ''; let prevSpace = false;
@@ -480,7 +524,7 @@
       const isAlphaNum = (ch)=>{ const c = ch.charCodeAt(0); return (c>=48&&c<=57)||(c>=65&&c<=90)||(c>=97&&c<=122); };
       while (s && !isAlphaNum(s[0])) s = s.slice(1);
       if (!s) return '';
-      const closers = new Set([34,39,41,93,187,8221]);
+      const closers = new Set([34,39,41,93,187,8221]); // ", ', ), ], », ”
       const len = s.length; let end = len;
       for (let i=0;i<len;i++){
         const ch = s[i];
@@ -496,7 +540,14 @@
       return first;
     }
 
-    function openTaskDialog(task) {
+    function setDialogReadOnly(ro){
+      [taskDesc, taskTitle, taskDate, taskStart, taskEnd, taskCompleted].forEach(el => el.disabled = !!ro);
+      $('#saveTask').disabled = !!ro;
+      deleteTaskBtn.disabled = !!ro;
+      deleteTaskBtn.classList.toggle('opacity-50', !!ro);
+    }
+
+    function openTaskDialog(task, locked=false) {
       editingId = task.id || null;
       taskDesc.value = task.description || '';
       taskTitle.value = task.title || smartTitleFrom(task.description || '');
@@ -506,6 +557,7 @@
       taskEnd.value = task.endTime || store.prefs.workdayEnd;
       taskCompleted.checked = !!task.completed;
       deleteTaskBtn.classList.toggle('hidden', !editingId);
+      setDialogReadOnly(locked || isLockedKey(task.date || store.dateKey));
       taskDialog.showModal();
     }
 
@@ -525,6 +577,11 @@
         endTime: taskEnd.value,
         completed: !!taskCompleted.checked
       };
+      if (isLockedKey(t.date)) { alert('This day is locked (past or holiday). You cannot add or edit tasks.'); return; }
+      if (hasConflict(t.date, t.startTime, t.endTime, editingId)) {
+        alert('Time overlaps another task on this day. Pick a free slot.');
+        return;
+      }
       if (!store.tasksByDate[t.date]) store.tasksByDate[t.date] = [];
       const list = store.tasksByDate[t.date];
       const idx = list.findIndex(x => x.id === t.id);
@@ -536,19 +593,15 @@
 
     deleteTaskBtn.addEventListener('click', async () => {
       const date = taskDate.value;
+      if (isLockedKey(date)) { alert('This day is locked (past or holiday).'); return; }
       const list = store.tasksByDate[date] || [];
       store.tasksByDate[date] = list.filter(x => x.id !== editingId);
       await save();
       taskDialog.close();
       renderDay();
     });
-
     cancelTaskBtn.addEventListener('click', () => taskDialog.close());
     taskCloseBtn.addEventListener('click', () => taskDialog.close());
-
-    // ---------- Holiday helpers ----------
-    const isSundayKey = (key) => toDateFromKey(key).getDay() === 0;
-    const isHolidayKey = (key) => !!(store.holidays[key] || (store.prefs.holidaySunday && isSundayKey(key)));
 
     // ---------- Preferences ----------
     const prefsDialog = document.getElementById('prefsDialog');
@@ -578,7 +631,7 @@
       await save(); prefsDialog.close(); renderDay();
     });
 
-    // ---------- Backup (Option 1) ----------
+    // ---------- Backup (remembered) ----------
     function backupPayload(){
       return JSON.stringify({
         version: 1,
@@ -601,7 +654,6 @@
         store.writeLock = false;
       }
     }
-
     document.getElementById('exportJsonBtn').onclick = () => {
       const blob = new Blob([backupPayload()], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -643,14 +695,14 @@
           types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }]
         });
         store.backupHandle = handle;
-        await idbPut('backupHandle', handle);          // remember across reloads
-        await backupWriteFile();                       // initial write
+        await idbPut('backupHandle', handle);
+        await backupWriteFile();
         store.autoSaveEnabled = true;
         const autoToggle = document.getElementById('autoSaveToggle');
         const saveNowBtn = document.getElementById('backupSaveNowBtn');
         autoToggle.disabled = false; autoToggle.checked = true;
         saveNowBtn.disabled = false;
-        alert('Backup file chosen. Auto-save is ON and will be remembered.');
+        alert('Backup file chosen. Auto-save is ON and remembered.');
       } catch(e) { console.warn('Choose file cancelled', e); }
     };
     document.getElementById('backupSaveNowBtn').onclick = async () => {
@@ -684,8 +736,19 @@
       const a = document.createElement('a'); a.href = url; a.download = `DayPlan-${store.dateKey}.txt`;
       document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
     };
+    document.getElementById('shareBtn').onclick = async () => {
+      const d = toDateFromKey(store.dateKey);
+      const header = d.toLocaleDateString(undefined, { weekday:'long', month:'short', day:'numeric', year:'numeric' });
+      const tasks = (store.tasksByDate[store.dateKey]||[]).filter(t=>!t.completed).sort((a,b)=> (a.startTime||'') < (b.startTime||'') ? -1 : 1);
+      const lines = [`${header}${isHolidayKey(store.dateKey) ? ' — Holiday' : ''}`, ''];
+      if (tasks.length === 0) lines.push('(No tasks)');
+      tasks.forEach(t => lines.push(`• ${fmtDisplay(t.startTime)}–${fmtDisplay(t.endTime)}  ${t.title} — ${t.description||''}`.trim()));
+      const text = lines.join('\n');
+      try { if (navigator.share) { await navigator.share({ title: `Plan for ${store.dateKey}`, text }); return; } } catch(_) {}
+      openShareDialog(text);
+    };
 
-    // ---------- Search helpers (+ Next) ----------
+    // ---------- Search (+ Next) ----------
     function findDatesByTitle(q){
       const query = String(q||'').trim().toLowerCase();
       if (!query) return [];
@@ -723,18 +786,6 @@
     document.getElementById('searchNextBtn').addEventListener('click', ()=> navigateToSearchAt(searchIndex+1));
 
     // ---------- Auto-postpone ----------
-    function chooseBestFutureDate(startKey, horizon=14){
-      const candidates = [];
-      for (let i=0;i<=horizon;i++) {
-        const k = shiftKey(startKey, i);
-        if (isHolidayKey(k)) continue;
-        const count = ((store.tasksByDate[k]||[]).filter(t=>!t.completed)).length;
-        candidates.push({k, count});
-      }
-      if (candidates.length === 0) return startKey;
-      candidates.sort((a,b)=> a.count===b.count ? (a.k < b.k ? -1:1) : a.count - b.count);
-      return candidates[0].k;
-    }
     function overlaps(aStart, aEnd, bStart, bEnd){ return aStart < bEnd && bStart < aEnd; }
     function findFirstFreeSlot(dateKey, durationMin){
       const start = parseHM(store.prefs.workdayStart);
@@ -750,8 +801,20 @@
       const e = new Date(end);
       return { start:s, end:e };
     }
+    function chooseBestFutureDate(startKey, horizon=14){
+      const candidates = [];
+      for (let i=0;i<=horizon;i++) {
+        const k = shiftKey(startKey, i);
+        if (isHolidayKey(k)) continue;
+        const count = ((store.tasksByDate[k]||[]).filter(t=>!t.completed)).length;
+        candidates.push({k, count});
+      }
+      if (candidates.length === 0) return startKey;
+      candidates.sort((a,b)=> a.count===b.count ? (a.k < b.k ? -1:1) : a.count - b.count);
+      return candidates[0].k;
+    }
     function postponeOverdueFromYesterdayOnce(){
-      const today = fmtDateKey(new Date());
+      const today = todayKey();
       if (store.lastOpenedKey === today) return;
       const yest = shiftKey(today, -1);
       const list = (store.tasksByDate[yest]||[]);
@@ -771,36 +834,33 @@
     }
 
     // ---------- Render ----------
+    const addBtn = document.getElementById('addTaskFab');
     function renderDay() {
       const d = toDateFromKey(store.dateKey);
       const headerText = `${d.toLocaleDateString(undefined,{weekday:'long'})} ${d.toLocaleDateString(undefined,{day:'numeric', month:'short'})}`;
       dayLabel.textContent = headerText;
       datePicker.value = store.dateKey;
-      dayNote.value = store.dayNotes[store.dateKey] || '';
-      addBtn.classList.toggle('opacity-50', isHolidayKey(store.dateKey));
+      document.getElementById('dayNote').value = store.dayNotes[store.dateKey] || '';
+      const locked = isLockedKey(store.dateKey);
+      addBtn.classList.toggle('opacity-50', locked);
       buildTimeRail();
       buildGrid();
     }
 
-    // ---------- Init + tests ----------
-    const addBtn = document.getElementById('addTaskFab');
+    // ---------- Wiring ----------
     addBtn.onclick = () => {
-      if (isHolidayKey(store.dateKey)) { alert('This day is marked as Holiday. Adding new tasks is disabled.'); return; }
+      if (isLockedKey(store.dateKey)) { alert('This day is locked (past or holiday).'); return; }
       openTaskDialog({ id: null, date: store.dateKey, startTime: store.prefs.workdayStart, endTime: store.prefs.workdayEnd, title: '', description: '', completed:false });
     };
-    document.getElementById('shareBtn').onclick = async () => {
-      const d = toDateFromKey(store.dateKey);
-      const header = d.toLocaleDateString(undefined, { weekday:'long', month:'short', day:'numeric', year:'numeric' });
-      const tasks = (store.tasksByDate[store.dateKey]||[]).filter(t=>!t.completed).sort((a,b)=> (a.startTime||'') < (b.startTime||'') ? -1 : 1);
-      const lines = [`${header}${isHolidayKey(store.dateKey) ? ' — Holiday' : ''}`, ''];
-      if (tasks.length === 0) lines.push('(No tasks)');
-      tasks.forEach(t => lines.push(`• ${fmtDisplay(t.startTime)}–${fmtDisplay(t.endTime)}  ${t.title} — ${t.description||''}`.trim()));
-      const text = lines.join('\n');
-      try { if (navigator.share) { await navigator.share({ title: `Plan for ${store.dateKey}`, text }); return; } } catch(_) {}
-      openShareDialog(text);
+    document.getElementById('dayNote').addEventListener('input', async (e)=>{ store.dayNotes[store.dateKey] = e.target.value; await save(); });
+    document.getElementById('holidayToggle').onclick = async () => {
+      const k = store.dateKey;
+      if (isPastKey(k)) { alert('Past days are locked.'); return; }
+      if (store.holidays[k]) delete store.holidays[k]; else store.holidays[k] = true;
+      await save(); renderDay();
     };
-    document.getElementById('holidayToggle').onclick = async () => { const k = store.dateKey; if (store.holidays[k]) delete store.holidays[k]; else store.holidays[k] = true; await save(); renderDay(); };
 
+    // ---------- Init + tests ----------
     (async function init(){
       if (!store.tasksByDate[store.dateKey]) {
         const d = store.dateKey;
@@ -816,7 +876,6 @@
         await navigator.storage?.persist?.();
         const savedHandle = await idbGet('backupHandle');
         if (savedHandle && supportsFS) {
-          // Ask/query for permission (Chrome: queryPermission first)
           let perm = savedHandle.queryPermission ? await savedHandle.queryPermission({mode:'readwrite'}) : 'prompt';
           if (perm !== 'granted' && savedHandle.requestPermission) {
             perm = await savedHandle.requestPermission({mode:'readwrite'});
@@ -824,7 +883,7 @@
           if (perm === 'granted') {
             store.backupHandle = savedHandle;
             store.autoSaveEnabled = true;
-            await backupWriteFile(); // ensure file has current state
+            await backupWriteFile();
             console.log('[Backup] Auto-save resumed with remembered file.');
           } else {
             console.log('[Backup] Handle remembered but permission not granted yet.');
@@ -841,6 +900,7 @@
       function expectEqual(name, got, want){ const pass = got === want; console[pass ? 'log' : 'error'](`[TEST] ${name}:`, pass ? 'ok' : `got "${got}", want "${want}"`); }
       function expect(name, cond){ console[cond ? 'log' : 'error'](`[TEST] ${name}:`, cond ? 'ok' : 'failed'); }
 
+      // smartTitle
       expectEqual('smartTitleFrom empty', smartTitleFrom(''), '');
       expectEqual('smartTitleFrom simple', smartTitleFrom('Do the thing.'), 'Do the thing');
       expectEqual('smartTitleFrom newline', smartTitleFrom('Hello\nworld'), 'Hello world');
@@ -853,16 +913,29 @@
       expectEqual('smartTitleFrom punct only', smartTitleFrom('!!!'), '');
       expectEqual('smartTitleFrom dash sentence', smartTitleFrom('— Plan this – now! Later'), 'Plan this – now');
 
-      const tdy = store.dateKey;
-      const fut = shiftKey(tdy, 3);
-      store.tasksByDate[fut] = [ { id:'s1', date:fut, title:'Standup follow-up', startTime:'11:00', endTime:'11:30', completed:false } ];
-      const res = findDatesByTitle('standup');
-      expect('search finds today or future', res.includes(tdy) || res.includes(fut));
+      // conflict detection
+      const td = todayKey();
+      const fut = shiftKey(td, 2);
+      store.tasksByDate[fut] = [
+        { id:'t1', date:fut, title:'A', startTime:'09:00', endTime:'10:00', completed:false },
+        { id:'t2', date:fut, title:'B', startTime:'10:30', endTime:'11:00', completed:false },
+      ];
+      expect('no conflict at 10:00–10:30', !hasConflict(fut, '10:00', '10:30'));
+      expect('overlap start-inside', hasConflict(fut, '09:30', '10:30'));
+      expect('overlap end-inside', hasConflict(fut, '08:30', '09:30'));
+      expect('abut OK end==start', !hasConflict(fut, '10:00', '10:30'));
+      expect('invalid duration blocks', hasConflict(fut, '10:00', '10:00'));
+
+      // search sorting + next cycling
+      store.tasksByDate[td] = store.tasksByDate[td] || [];
+      store.tasksByDate[td].push({ id:'s1', date:td, title:'Standup follow-up', startTime:'11:00', endTime:'11:30', completed:false });
+      const res = (function(q){ const r = findDatesByTitle(q); return r; })('standup');
+      expect('search finds today or future', res.includes(td) || res.includes(fut));
       const sorted = [...res].sort();
       expectEqual('search results sorted', res.join(','), sorted.join(','));
 
-      const today = fmtDateKey(new Date());
-      const testDay = shiftKey(today,2);
+      // slot finder
+      const testDay = shiftKey(td,3);
       store.tasksByDate[testDay] = [
         { id:'a', date:testDay, title:'A', startTime:'09:00', endTime:'10:00', completed:false },
         { id:'b', date:testDay, title:'B', startTime:'10:00', endTime:'10:30', completed:false },
@@ -871,10 +944,26 @@
       const sHM = `${pad(slot.start.getHours())}:${pad(slot.start.getMinutes())}`;
       expectEqual('free slot starts at 10:30', sHM, '10:30');
 
+      // past lock
+      const past = shiftKey(td, -1);
+      expect('past day locked', isLockedKey(past) === true);
+
+      // postpone moves & no overlap
+      const y = shiftKey(td, -1);
+      store.tasksByDate[y] = [{ id:'yy', date:y, title:'Carry', startTime:'09:00', endTime:'10:00', completed:false }];
+      postponeOverdueFromYesterdayOnce();
+      const movedDay = Object.keys(store.tasksByDate).find(k => k >= td && (store.tasksByDate[k]||[]).some(t=>t.title==='Carry'));
+      expect('auto-postpone moved to future', !!movedDay);
+      if (movedDay) {
+        const mm = store.tasksByDate[movedDay].find(t=>t.title==='Carry');
+        expect('moved has no conflict', !hasConflict(movedDay, mm.startTime, mm.endTime, mm.id));
+      }
+
+      // backup support flags
       expect('supportsFS is boolean', typeof supportsFS === 'boolean');
-      idbPut('__selftest__', {ok:true}).then(()=>console.log('[TEST] idbPut ok')).catch(()=>console.error('[TEST] idbPut fail'));
-      const payload = (function(){ try { return backupPayload(); } catch { return ''; } })();
-      expect('backupPayload is JSON string', typeof payload === 'string' && payload.trim().startsWith('{'));
+      (function(){ try { const p = backupPayload(); expect('backupPayload is JSON string', typeof p === 'string' && p.trim().startsWith('{')); } catch { console.error('[TEST] backupPayload failed'); } })();
+
+      console.log('[TEST] done');
     }
   </script>
 </body>
